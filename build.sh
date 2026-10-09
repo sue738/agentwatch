@@ -16,6 +16,7 @@ cp .build/release/agentwatch "$APP/Contents/MacOS/agentwatch"
 cp Info.plist "$APP/Contents/Info.plist"
 
 cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp scripts/agstats-bridge.js "$APP/Contents/Resources/agstats-bridge.js"
 
 echo "==> codesign (ad-hoc)"
 codesign --force --deep -s - "$APP"

@@ -10,6 +10,10 @@ enum Scope: String, CaseIterable, Identifiable {
     }
 }
 
+private extension Agent {
+    var shortLabel: String { self == .codex ? "CO" : "CC" }
+}
+
 @MainActor
 final class DashboardModel: ObservableObject {
     @Published var selectedScope: Scope = Scope(rawValue: UserDefaults.standard.string(forKey: "AgentWatch.selectedScope") ?? "") ?? .all {
@@ -19,9 +23,11 @@ final class DashboardModel: ObservableObject {
     @Published var legacy: LegacyReport?
     @Published var loading = false
     @Published var legacyLoading = false
+    @Published var agstatsLoading = false
     @Published var refreshedAt: Date?
     private var refreshTask: Task<Void, Never>?
     private var legacyFetchedAt = Date.distantPast
+    private var agstatsFetchedAt = Date.distantPast
 
     private func mergeClaudeRateWindows(_ incoming: [String: RateWindow]) {
         guard !incoming.isEmpty else { return }
@@ -39,10 +45,29 @@ final class DashboardModel: ObservableObject {
         guard !loading else { return }
         loading = true
         refreshTask = Task {
-            let value = await Task.detached(priority: .utility) { TranscriptScanner.scan() }.value
-            report = value
+            let native = await Task.detached(priority: .utility) { TranscriptScanner.scan() }.value
+            if let cached = AgstatsScanner.cached(native: native) {
+                report = cached
+                agstatsFetchedAt = AgstatsScanner.cachedAt ?? .distantPast
+            } else {
+                report = native
+            }
             refreshedAt = Date()
             loading = false
+            if AgstatsScanner.isAvailable && !agstatsLoading && Date().timeIntervalSince(agstatsFetchedAt) > 900 {
+                agstatsLoading = true
+                Task {
+                    let updated = await Task.detached(priority: .utility) {
+                        AgstatsScanner.fresh(native: native)
+                    }.value
+                    if let updated {
+                        report = updated
+                        refreshedAt = Date()
+                    }
+                    agstatsFetchedAt = Date()
+                    agstatsLoading = false
+                }
+            }
         }
         if !legacyLoading && Date().timeIntervalSince(legacyFetchedAt) > 900 {
             legacyLoading = true
@@ -407,10 +432,10 @@ private struct RankedBars: View {
             VStack(spacing: 5) {
                 ForEach(items) { item in
                     HStack(spacing: 5) {
-                        Text(item.agent == .codex ? "C" : "A")
+                        Text(item.agent.shortLabel)
                             .font(.system(size: 8, weight: .bold))
                             .foregroundStyle(item.agent == .codex ? codexColor : claudeColor)
-                            .frame(width: 10)
+                            .frame(width: 18)
                         Text(item.name)
                             .font(.system(size: 9))
                             .lineLimit(1)
@@ -806,6 +831,7 @@ struct Dashboard: View {
     private var points: [Daily] {
         model.report?.daily.filter { scope.includes($0.agent) } ?? []
     }
+    private var claudeUsesAgstats: Bool { model.report?.agstatsAgents.contains(.claude) == true }
     private var today: [Daily] {
         points.filter { Calendar.current.isDateInToday($0.date) }
     }
@@ -829,16 +855,22 @@ struct Dashboard: View {
         }
     }
     private var hoursPoints: [MetricPoint] {
-        metrics({ $0.taskDurationSeconds / 3600 }, { _, legacy in legacy?.hours })
+        metrics({ $0.taskDurationSeconds / 3600 }, { point, legacy in
+            claudeUsesAgstats ? point.taskDurationSeconds / 3600 : legacy?.hours
+        })
     }
     private var longestPoints: [MetricPoint] {
-        metrics({ $0.longestRunSeconds / 3600 }, { _, legacy in legacy?.longestHours })
+        metrics({ $0.longestRunSeconds / 3600 }, { point, legacy in
+            claudeUsesAgstats ? point.longestRunSeconds / 3600 : legacy?.longestHours
+        })
     }
     private var parallelismPoints: [MetricPoint] {
-        metrics({ $0.parallelism }, { _, legacy in legacy?.parallelism })
+        metrics({ $0.parallelism }, { point, legacy in claudeUsesAgstats ? point.parallelism : legacy?.parallelism })
     }
     private var delegationPoints: [MetricPoint] {
-        metrics({ $0.delegationPercent }, { _, legacy in legacy?.delegationPercent })
+        metrics({ $0.delegationPercent }, { point, legacy in
+            claudeUsesAgstats ? point.delegationPercent : legacy?.delegationPercent
+        })
     }
     private var correctionPoints: [MetricPoint] {
         metrics({ _ in nil }, { _, legacy in legacy?.selfCorrectionPercent })
@@ -847,15 +879,15 @@ struct Dashboard: View {
         metrics({ _ in nil }, { _, legacy in legacy?.bounces })
     }
     private var hoursComparePoints: [ComparedPoint] {
-        let hours = hoursPoints.map { ComparedPoint(date: $0.date, series: $0.agent == .codex ? "C 稼働" : "A 稼働", kind: "稼働", value: $0.value) }
-        let longest = longestPoints.map { ComparedPoint(date: $0.date, series: $0.agent == .codex ? "C 最長" : "A 最長", kind: "最長", value: $0.value) }
+        let hours = hoursPoints.map { ComparedPoint(date: $0.date, series: "\($0.agent.shortLabel) 稼働", kind: "稼働", value: $0.value) }
+        let longest = longestPoints.map { ComparedPoint(date: $0.date, series: "\($0.agent.shortLabel) 最長", kind: "最長", value: $0.value) }
         return hours + longest
     }
     private var hoursCompareSeries: [ComparedSeries] { [
-        ComparedSeries(name: "C 稼働", kind: "稼働", color: codexColor),
-        ComparedSeries(name: "A 稼働", kind: "稼働", color: claudeColor),
-        ComparedSeries(name: "C 最長", kind: "最長", color: accentCyan),
-        ComparedSeries(name: "A 最長", kind: "最長", color: accentPurple)
+        ComparedSeries(name: "CO 稼働", kind: "稼働", color: codexColor),
+        ComparedSeries(name: "CC 稼働", kind: "稼働", color: claudeColor),
+        ComparedSeries(name: "CO 最長", kind: "最長", color: accentCyan),
+        ComparedSeries(name: "CC 最長", kind: "最長", color: accentPurple)
     ] }
     private var costPoints: [MetricPoint] {
         metrics({ _ in nil }, { _, legacy in legacy?.cost })
@@ -879,14 +911,21 @@ struct Dashboard: View {
         }.sorted { $0.date < $1.date }
     }
     private var inputPoints: [MetricPoint] {
-        metrics({ $0.inputTokens }, { point, legacy in legacy?.inputTokens ?? point.inputTokens })
+        metrics({ $0.inputTokens }, { point, legacy in
+            claudeUsesAgstats ? point.inputTokens : (legacy?.inputTokens ?? point.inputTokens)
+        })
     }
     private var outputPoints: [MetricPoint] {
-        metrics({ $0.outputTokens }, { point, legacy in legacy?.outputTokens ?? point.outputTokens })
+        metrics({ $0.outputTokens }, { point, legacy in
+            claudeUsesAgstats ? point.outputTokens : (legacy?.outputTokens ?? point.outputTokens)
+        })
     }
     private var toolFailurePoints: [MetricPoint] {
         metrics({ $0.tools == 0 ? nil : Double($0.failures) / Double($0.tools) * 100 }, { point, legacy in
-            legacy?.toolFailurePercent ?? (point.tools == 0 ? nil : Double(point.failures) / Double(point.tools) * 100)
+            if claudeUsesAgstats {
+                return point.tools == 0 ? nil : Double(point.failures) / Double(point.tools) * 100
+            }
+            return legacy?.toolFailurePercent ?? (point.tools == 0 ? nil : Double(point.failures) / Double(point.tools) * 100)
         })
     }
     private var contextMetricPoints: [MetricPoint] {
@@ -1098,12 +1137,12 @@ struct Dashboard: View {
                     HStack(alignment: .top, spacing: 10) {
                         Card(title: "よく使うツール · 上位") {
                             RankedBars(items: namedTools)
-                            Text("C = Codex / A = Claude · 件数は別スケール")
+                            Text("CO = Codex / CC = Claude Code · 件数は別スケール")
                                 .font(.system(size: 8)).foregroundStyle(.tertiary)
                         }
                         Card(title: "利用モデル · 上位") {
                             RankedBars(items: namedModels)
-                            Text("記録されたモデルイベント数 · C = Codex / A = Claude")
+                            Text("記録されたモデルイベント数 · CO = Codex / CC = Claude Code")
                                 .font(.system(size: 8)).foregroundStyle(.tertiary)
                         }
                     }
@@ -1140,7 +1179,7 @@ struct Dashboard: View {
                     if !filteredWarnings.isEmpty {
                         Text(filteredWarnings.joined(separator: " / ")).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
-                    Text("過去30日・ローカル履歴 / 最終更新 \(model.refreshedAt?.formatted(date: .omitted, time: .shortened) ?? "—")")
+                    Text("過去30日・\(report.agstatsAgents.isEmpty ? "ローカル履歴" : "共通指標 agstats") / 最終更新 \(model.refreshedAt?.formatted(date: .omitted, time: .shortened) ?? "—")")
                         .font(.system(size: 9)).foregroundStyle(.tertiary)
                 } else {
                     Text("履歴を集計しています…").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -1154,10 +1193,13 @@ struct Dashboard: View {
     }
 
     var body: some View {
+        // MenuBarExtra では ScrollView の固定高さが余白や切れを生むため、ccwatch と同じ順序で高さを決める。
         ScrollView(.vertical) {
             dashboardContent
         }
-        .frame(width: 660, height: maxPanelHeight, alignment: .top)
+        .frame(width: 660)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxHeight: maxPanelHeight, alignment: .top)
         .scrollIndicators(.visible)
         .onAppear { if model.report == nil { model.refresh() } }
     }
@@ -1218,6 +1260,15 @@ struct AgentWatchApp: App {
         }
         if CommandLine.arguments.contains("--rate-summary") {
             print("Claude rate windows: \(LegacyScanner.claudeRateWindows().count)")
+            exit(0)
+        }
+        if CommandLine.arguments.contains("--agstats-summary") {
+            let native = TranscriptScanner.scan()
+            guard let report = AgstatsScanner.fresh(native: native) else {
+                print("agstats: unavailable or failed; local scanner remains active")
+                exit(1)
+            }
+            print("agstats: \(report.agstatsAgents.map(\.rawValue).sorted().joined(separator: ", ")); days=\(report.daily.count); rateWindows=\(report.rateWindows.count)")
             exit(0)
         }
         if CommandLine.arguments.contains("--summary") {

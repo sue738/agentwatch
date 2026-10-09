@@ -68,6 +68,7 @@ struct Report {
     let sessions: [Agent: Int]
     let warnings: [Agent: String]
     let rateWindows: [String: RateWindow]
+    var agstatsAgents: Set<Agent> = []
 }
 
 private struct FileSummary: Codable {
