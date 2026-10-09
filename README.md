@@ -4,6 +4,14 @@ macOS メニューバーで Codex と Claude Code の利用状況を並べて見
 `すべて / Codex / Claude` の切り替えは、すべてのカードに適用されます。
 表示期間は今日を含む過去30日です。
 
+## 画面イメージ
+
+![AgentWatchのダッシュボード（サンプルデータ）](docs/dashboard.png)
+
+画像の数値は公開用のサンプルデータです。実際の利用履歴や料金は含みません。
+`swift build -c release` の後、`.build/release/agentwatch --render-sample docs/dashboard.png`
+で再生成できます。
+
 ## 指標と出典
 
 | 指標 | Codex | Claude |

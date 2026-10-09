@@ -1170,15 +1170,22 @@ struct AgentWatchApp: App {
     init() {
         let previewFlag = CommandLine.arguments.firstIndex(of: "--render-preview")
         let menuBarFlag = CommandLine.arguments.firstIndex(of: "--render-menubar")
-        if let index = previewFlag ?? menuBarFlag, index + 1 < CommandLine.arguments.count {
+        let sampleFlag = CommandLine.arguments.firstIndex(of: "--render-sample")
+        if let index = previewFlag ?? menuBarFlag ?? sampleFlag, index + 1 < CommandLine.arguments.count {
             let destination = CommandLine.arguments[index + 1]
             let scope = CommandLine.arguments.count > index + 2
                 ? Scope.allCases.first { $0.rawValue == CommandLine.arguments[index + 2] } ?? .all
                 : .all
             Task { @MainActor in
                 let model = DashboardModel()
-                model.report = await Task.detached(priority: .utility) { TranscriptScanner.scan() }.value
-                model.legacy = await Task.detached(priority: .utility) { LegacyScanner.scan() }.value
+                if sampleFlag != nil {
+                    let (report, legacy) = SampleData.make()
+                    model.report = report
+                    model.legacy = legacy
+                } else {
+                    model.report = await Task.detached(priority: .utility) { TranscriptScanner.scan() }.value
+                    model.legacy = await Task.detached(priority: .utility) { LegacyScanner.scan() }.value
+                }
                 model.refreshedAt = Date()
                 let background = menuBarFlag != nil
                     ? Color(red: 0.20, green: 0.22, blue: 0.23)
