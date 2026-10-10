@@ -689,6 +689,7 @@ private struct ActivityHeatmap: View {
 
 private struct MenuBarStatusLabel: View {
     @ObservedObject var model: DashboardModel
+    @ObservedObject private var live = LiveStateModel.shared
     private let previewScope: Scope?
 
     init(model: DashboardModel, previewScope: Scope? = nil) {
@@ -706,6 +707,10 @@ private struct MenuBarStatusLabel: View {
 
     private var statusContent: some View {
         HStack(spacing: 3) {
+            if live.liveCount > 0 {
+                LiveCountLabel(count: live.liveCount, subagents: live.state?.subagents.count ?? 0)
+                Rectangle().fill(Color.primary.opacity(0.22)).frame(width: 1, height: 17)
+            }
             if scope != .codex {
                 MenuQuotaGroup(name: "CC", fiveHour: current(model.legacy?.rateWindows["Claude 5時間"]),
                                weekly: current(model.legacy?.rateWindows["Claude 週間"]))
@@ -739,7 +744,7 @@ private struct MenuBarStatusLabel: View {
                 Text("AgentWatch")
             }
         }
-        .accessibilityLabel("AgentWatch。Claude CodeとCodexの5時間・週間利用枠")
+        .accessibilityLabel("AgentWatch。いま動いているもの \(live.liveCount)件。Claude CodeとCodexの5時間・週間利用枠")
         .help("Claude Code / Codex の利用枠。バーの色 = 使用率、縦線 = 時間進捗。使用率が時間進捗を超えると赤")
     }
 }
@@ -819,6 +824,7 @@ private struct MenuQuotaBar: View {
 
 struct Dashboard: View {
     @ObservedObject var model: DashboardModel
+    @ObservedObject private var live = LiveStateModel.shared
     private let previewScope: Scope?
 
     init(model: DashboardModel, initialScope: Scope? = nil) {
@@ -1040,6 +1046,9 @@ struct Dashboard: View {
                         .onTapGesture { model.refresh() }
                         .accessibilityLabel("履歴を再集計")
                         .accessibilityAddTraits(.isButton)
+                }
+                if live.fileExists || live.fresh {
+                    Card(title: "いま動いているもの（runawake）") { LiveNowContent(live: live) }
                 }
                 if let report = model.report {
                     if scope == .codex {
